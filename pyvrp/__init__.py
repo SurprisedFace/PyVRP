@@ -11,6 +11,10 @@ from .Model import Profile as Profile
 from .PenaltyManager import PenaltyManager as PenaltyManager
 from .PenaltyManager import PenaltyParams as PenaltyParams
 from .Result import Result as Result
+from .SoftTimeWindowPenalty import SoftTimeWindowParams as SoftTimeWindowParams
+from .SoftTimeWindowPenalty import (
+    soft_time_window_penalty as soft_time_window_penalty,
+)
 from .Statistics import Statistics as Statistics
 from ._pyvrp import Client as Client
 from ._pyvrp import ClientGroup as ClientGroup

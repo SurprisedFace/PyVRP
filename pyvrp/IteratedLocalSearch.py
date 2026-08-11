@@ -7,6 +7,10 @@ from typing import TYPE_CHECKING
 from pyvrp.ProgressPrinter import ProgressPrinter
 from pyvrp.Result import Result
 from pyvrp.RingBuffer import RingBuffer
+from pyvrp.SoftTimeWindowPenalty import (
+    SoftTimeWindowParams,
+    soft_time_window_penalty,
+)
 from pyvrp.Statistics import Statistics
 
 if TYPE_CHECKING:
@@ -31,11 +35,19 @@ class IteratedLocalSearchParams:
     exhaustive_on_best
         Whether to perform a more expensive, exhaustive search for newly found
         best solutions.
+    soft_tw
+        Optional soft time window parameters. When set, an additional
+        penalty is added (on top of the regular cost) for candidate, current,
+        and best solutions whenever comparing them during the search, to
+        discourage schedules with arrivals close to a client's time window
+        deadline. This does not affect the neighbourhood search itself, only
+        which of its outcomes this algorithm prefers. Disabled by default.
     """
 
     num_iters_no_improvement: int = 150_000
     history_length: int = 300
     exhaustive_on_best: bool = True
+    soft_tw: SoftTimeWindowParams | None = None
 
     def __post_init__(self):
         if self.num_iters_no_improvement < 0:
@@ -125,6 +137,21 @@ class IteratedLocalSearch:
         print_progress = ProgressPrinter(display, display_interval)
         print_progress.start(self._data)
 
+        soft_tw = self._params.soft_tw
+
+        def augmented_cost(base_cost: int, sol: Solution) -> int:
+            # Adds the soft time window penalty (if configured) on top of a
+            # cost value already computed by the cost evaluator. This lets
+            # the outer search prefer solutions with fewer arrivals close to
+            # a deadline, without changing how the neighbourhood search
+            # itself evaluates moves.
+            if soft_tw is None:
+                return base_cost
+
+            return base_cost + soft_time_window_penalty(
+                sol, self._data, soft_tw
+            )
+
         history: RingBuffer[Solution] = RingBuffer(self._params.history_length)
         stats = Statistics(collect_stats=collect_stats)
 
@@ -148,7 +175,9 @@ class IteratedLocalSearch:
             self._pm.register(cand)
 
             iters_no_improvement += 1
-            if cost_eval.cost(cand) < cost_eval.cost(best):
+            cand_best_cost = augmented_cost(cost_eval.cost(cand), cand)
+            best_cost = augmented_cost(cost_eval.cost(best), best)
+            if cand_best_cost < best_cost:
                 best = cand
                 iters_no_improvement = 0
 
@@ -161,15 +190,19 @@ class IteratedLocalSearch:
                     if cand.is_feasible():
                         best = cand
 
-            cand_cost = cost_eval.penalised_cost(cand)
-            curr_cost = cost_eval.penalised_cost(curr)
+            cand_cost = augmented_cost(cost_eval.penalised_cost(cand), cand)
+            curr_cost = augmented_cost(cost_eval.penalised_cost(curr), curr)
 
             # We use either the initial cost or the current cost value from
             # some iterations ago to determine whether to accept the candidate
             # solution, if available.
-            late_cost = cost_eval.penalised_cost(self._init)
+            late_cost = augmented_cost(
+                cost_eval.penalised_cost(self._init), self._init
+            )
             if (late := history.peek()) is not None:
-                late_cost = cost_eval.penalised_cost(late)
+                late_cost = augmented_cost(
+                    cost_eval.penalised_cost(late), late
+                )
 
             # Late-acceptance hill climbing of Burke and Bykov (2017). We use
             # both enhancements of section 4.2:
