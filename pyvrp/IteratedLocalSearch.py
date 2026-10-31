@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -139,6 +140,30 @@ class IteratedLocalSearch:
 
         soft_tw = self._params.soft_tw
 
+        # The soft time window penalty is computed in Python over every visit
+        # and was evaluated about six times per iteration, although only the
+        # candidate is new: best, curr and the late-acceptance reference are
+        # immutable solutions whose penalty cannot change. On 2000 clients
+        # this made a solve up to 27 times slower. The penalty is therefore
+        # cached per solution object. The cache holds a reference to each
+        # solution, so its id cannot be reused while it is cached, and a miss
+        # just recomputes the penalty, so results do not depend on the cache.
+        penalty_cache: OrderedDict[int, tuple[Solution, int]] = OrderedDict()
+        cache_size = 2 * self._params.history_length + 16
+
+        def soft_penalty(sol: Solution) -> int:
+            key = id(sol)
+            hit = penalty_cache.get(key)
+            if hit is not None and hit[0] is sol:
+                penalty_cache.move_to_end(key)
+                return hit[1]
+
+            penalty = soft_time_window_penalty(sol, self._data, soft_tw)
+            penalty_cache[key] = (sol, penalty)
+            if len(penalty_cache) > cache_size:
+                penalty_cache.popitem(last=False)
+            return penalty
+
         def augmented_cost(base_cost: int, sol: Solution) -> int:
             # Adds the soft time window penalty (if configured) on top of a
             # cost value already computed by the cost evaluator. This lets
@@ -148,9 +173,7 @@ class IteratedLocalSearch:
             if soft_tw is None:
                 return base_cost
 
-            return base_cost + soft_time_window_penalty(
-                sol, self._data, soft_tw
-            )
+            return base_cost + soft_penalty(sol)
 
         history: RingBuffer[Solution] = RingBuffer(self._params.history_length)
         stats = Statistics(collect_stats=collect_stats)
